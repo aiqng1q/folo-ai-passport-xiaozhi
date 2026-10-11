@@ -1470,7 +1470,7 @@ void LcdDisplay::CreateAvatarAnimation() {
         [](lv_timer_t* timer) {
             static_cast<LcdDisplay*>(lv_timer_get_user_data(timer))->UpdateAvatarAnimation();
         },
-        40, this);
+        60, this);
 }
 
 void LcdDisplay::ShowEmojiFrame(const EmojiFrame* frame) {
@@ -1487,7 +1487,7 @@ void LcdDisplay::ShowEmojiFrame(const EmojiFrame* frame) {
     lv_obj_remove_flag(emoji_overlay_, LV_OBJ_FLAG_HIDDEN);
 }
 
-// Runs in the LVGL task (display lock held) every 40 ms.
+// Runs in the LVGL task (display lock held) every 60 ms.
 void LcdDisplay::UpdateAvatarAnimation() {
     constexpr int64_t kIdleFrameDelayMs = 30000;
     int64_t now = esp_timer_get_time() / 1000;
@@ -1507,13 +1507,14 @@ void LcdDisplay::UpdateAvatarAnimation() {
 
     const EmojiFrame* frame = nullptr;
     const EmojiFrame* talk = collection->GetEmojiFrame(current_emotion_, "talk");
-    // Only move the mouth while audio is actually queued, so it rests between sentences.
-    bool talking = state == kDeviceStateSpeaking && !app.GetAudioService().IsPlaybackIdle();
+    // Do not query the audio service from here: taking its queue mutex from the LVGL task
+    // every few tens of milliseconds can delay audio playback on single-core chips.
+    bool talking = state == kDeviceStateSpeaking;
     if (talking && talk != nullptr) {
         if (now >= next_mouth_toggle_ms_) {
             mouth_open_ = !mouth_open_;
             next_mouth_toggle_ms_ =
-                now + (mouth_open_ ? 110 + esp_random() % 120 : 80 + esp_random() % 100);
+                now + (mouth_open_ ? 160 + esp_random() % 160 : 120 + esp_random() % 120);
         }
         frame = mouth_open_ ? talk : nullptr;
     } else {
