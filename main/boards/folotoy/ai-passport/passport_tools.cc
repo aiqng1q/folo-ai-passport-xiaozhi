@@ -1,27 +1,90 @@
 #include "passport_tools.h"
 
 #include "application.h"
-#include "assets.h"
 #include "assets/lang_config.h"
 #include "board.h"
-#include "lvgl_theme.h"
+#include "display.h"
 #include "mcp_server.h"
 
 #include <esp_log.h>
+#include <esp_timer.h>
 #include <cJSON.h>
 
-#include <cstring>
 #include <memory>
+#include <mutex>
+#include <string>
 #include <vector>
 
 #define TAG "PassportTools"
 
 namespace {
 
-constexpr char kPicturePrefix[] = "pic_";
+// ---------------------------------------------------------------------------
+// Ringtone. Everything here runs on the main task (timer callbacks only call
+// Application::Schedule), so no locking is needed.
+//
+// The device rings locally instead of asking the server to speak the reminder:
+// it works even when the conversation channel is closed, and nothing cancels it.
 
-bool IsPictureEmotion(const char* emotion) {
-    return strncmp(emotion, kPicturePrefix, sizeof(kPicturePrefix) - 1) == 0;
+constexpr int kRingIntervalMs = 1500;
+constexpr int kMaxRings = 20;           // about 30 seconds of ringing
+constexpr int kMaxWaitTicks = 120;      // wait up to 3 minutes for the device to become idle
+constexpr int kNotificationMs = 60000;  // keep the reminder text on screen for a minute
+
+esp_timer_handle_t g_ring_timer = nullptr;
+int g_rings = 0;
+int g_wait_ticks = 0;
+
+void StopRinging() {
+    if (g_ring_timer != nullptr) {
+        esp_timer_stop(g_ring_timer);
+    }
+    g_rings = 0;
+    g_wait_ticks = 0;
+}
+
+void RingTick() {
+    auto& app = Application::GetInstance();
+    if (app.GetDeviceState() != kDeviceStateIdle) {
+        // Once ringing has started, any state change means the user reacted (wake word or
+        // button). Before that, the device is busy (e.g. talking): wait for it to finish.
+        if (g_rings > 0 || ++g_wait_ticks > kMaxWaitTicks) {
+            StopRinging();
+        }
+        return;
+    }
+    if (g_rings >= kMaxRings) {
+        StopRinging();
+        return;
+    }
+    if (g_rings == 0) {
+        if (auto display = Board::GetInstance().GetDisplay(); display != nullptr) {
+            display->SetEmotion("surprised");
+        }
+    }
+    g_rings++;
+    // Two short chimes per ring, like a doorbell.
+    app.PlaySound(Lang::Sounds::OGG_POPUP);
+    app.PlaySound(Lang::Sounds::OGG_POPUP);
+}
+
+void StartRinging(const std::string& message) {
+    if (auto display = Board::GetInstance().GetDisplay(); display != nullptr) {
+        display->ShowNotification("提醒：" + message, kNotificationMs);
+    }
+    if (g_ring_timer == nullptr) {
+        esp_timer_create_args_t args = {};
+        args.callback = [](void*) { Application::GetInstance().Schedule(RingTick); };
+        args.name = "reminder_ring";
+        if (esp_timer_create(&args, &g_ring_timer) != ESP_OK) {
+            ESP_LOGE(TAG, "Failed to create ring timer");
+            g_ring_timer = nullptr;
+            return;
+        }
+    }
+    StopRinging();
+    esp_timer_start_periodic(g_ring_timer, kRingIntervalMs * 1000);
+    RingTick();
 }
 
 // ---------------------------------------------------------------------------
@@ -32,6 +95,13 @@ struct Reminder {
     int64_t due_us = 0;
     std::string message;
     esp_timer_handle_t timer = nullptr;
+
+    ~Reminder() {
+        if (timer != nullptr) {
+            esp_timer_stop(timer);
+            esp_timer_delete(timer);
+        }
+    }
 };
 
 constexpr size_t kMaxReminders = 10;
@@ -51,33 +121,26 @@ std::unique_ptr<Reminder> TakeReminder(int id) {
     return nullptr;
 }
 
-void DeleteReminderTimer(Reminder* reminder) {
-    if (reminder->timer != nullptr) {
-        esp_timer_stop(reminder->timer);
-        esp_timer_delete(reminder->timer);
-        reminder->timer = nullptr;
-    }
-}
-
 void FireReminder(int id) {
     auto reminder = TakeReminder(id);
     if (reminder == nullptr) {
-        return;
+        return;  // cancelled in the meantime
     }
-    DeleteReminderTimer(reminder.get());
     ESP_LOGI(TAG, "Reminder %d: %s", id, reminder->message.c_str());
+    StartRinging(reminder->message);
+}
 
-    auto& app = Application::GetInstance();
-    auto display = Board::GetInstance().GetDisplay();
-    if (display != nullptr) {
-        display->SetEmotion("surprised");
-        display->ShowNotification("提醒：" + reminder->message, 10000);
+std::string FormatDuration(int seconds) {
+    if (seconds < 60) {
+        return std::to_string(seconds) + "秒";
     }
-    app.PlaySound(Lang::Sounds::OGG_POPUP);
-    if (app.GetDeviceState() == kDeviceStateIdle) {
-        // Let the assistant say the reminder in her own words.
-        app.WakeWordInvoke("（定时提醒到了，请用一两句话提醒我）" + reminder->message);
+    int minutes = (seconds + 30) / 60;
+    if (minutes < 60) {
+        return std::to_string(minutes) + "分钟";
     }
+    int hours = minutes / 60;
+    minutes %= 60;
+    return std::to_string(hours) + "小时" + (minutes > 0 ? std::to_string(minutes) + "分" : "");
 }
 
 std::string RemindersJson() {
@@ -98,106 +161,17 @@ std::string RemindersJson() {
     return result;
 }
 
-// ---------------------------------------------------------------------------
-// Pictures listed in the assets index.json:
-//   "pictures": [{"name": "cat", "description": "我家的猫"}]
-// Each picture image is an emoji entry named "pic_<name>".
-
-std::string PicturesJson() {
-    void* ptr = nullptr;
-    size_t size = 0;
-    if (!Assets::GetInstance().GetAssetData("index.json", ptr, size)) {
-        return "[]";
-    }
-    cJSON* root = cJSON_ParseWithLength(static_cast<const char*>(ptr), size);
-    if (root == nullptr) {
-        return "[]";
-    }
-    cJSON* pictures = cJSON_GetObjectItem(root, "pictures");
-    std::string result = "[]";
-    if (cJSON_IsArray(pictures)) {
-        char* text = cJSON_PrintUnformatted(pictures);
-        if (text != nullptr) {
-            result = text;
-            cJSON_free(text);
-        }
-    }
-    cJSON_Delete(root);
-    return result;
-}
-
 }  // namespace
 
-// ---------------------------------------------------------------------------
-// PassportDisplay
-
-PassportDisplay::~PassportDisplay() {
-    if (picture_timer_ != nullptr) {
-        esp_timer_stop(picture_timer_);
-        esp_timer_delete(picture_timer_);
-    }
-}
-
-void PassportDisplay::SetEmotion(const char* emotion) {
-    if (picture_active_ && !IsPictureEmotion(emotion)) {
-        std::lock_guard<std::mutex> lock(mutex_);
-        pending_emotion_ = emotion;
-        return;
-    }
-    LcdDisplay::SetEmotion(emotion);
-}
-
-bool PassportDisplay::ShowPicture(const std::string& name, int seconds) {
-    std::string emoji_name = kPicturePrefix + name;
-    auto theme = static_cast<LvglTheme*>(GetTheme());
-    auto collection = theme != nullptr ? theme->emoji_collection() : nullptr;
-    if (collection == nullptr || collection->GetEmojiImage(emoji_name.c_str()) == nullptr) {
-        return false;
-    }
-
-    if (picture_timer_ == nullptr) {
-        esp_timer_create_args_t args = {};
-        args.callback = [](void* arg) {
-            auto self = static_cast<PassportDisplay*>(arg);
-            Application::GetInstance().Schedule([self]() { self->EndPicture(); });
-        };
-        args.arg = this;
-        args.name = "picture_timer";
-        if (esp_timer_create(&args, &picture_timer_) != ESP_OK) {
-            return false;
-        }
-    }
-    esp_timer_stop(picture_timer_);
-
-    picture_active_ = true;
-    LcdDisplay::SetEmotion(emoji_name.c_str());
-    esp_timer_start_once(picture_timer_, (uint64_t)seconds * 1000000ULL);
-    return true;
-}
-
-void PassportDisplay::EndPicture() {
-    std::string emotion;
-    {
-        std::lock_guard<std::mutex> lock(mutex_);
-        emotion = pending_emotion_;
-        pending_emotion_ = "neutral";
-    }
-    picture_active_ = false;
-    if (Application::GetInstance().GetDeviceState() == kDeviceStateIdle) {
-        emotion = "neutral";
-    }
-    LcdDisplay::SetEmotion(emotion.c_str());
-}
-
-// ---------------------------------------------------------------------------
-
-void InitializePassportTools(PassportDisplay* display) {
+void InitializePassportTools() {
     auto& mcp = McpServer::GetInstance();
 
     mcp.AddTool(
         "self.reminder.set",
-        "Set a countdown reminder (定时提醒). When it is due the device rings and you will be "
-        "asked to remind the user. Convert the user's request to seconds, e.g. "
+        "Set a countdown reminder / alarm on this device (定时提醒、闹钟、倒计时). ALWAYS call "
+        "this "
+        "tool when the user asks to be reminded later; do not just reply in words. When it is due "
+        "the device rings and shows the message on screen. Convert the request to seconds, e.g. "
         "'10分钟后提醒我喝水' -> seconds=600, message='喝水'. Reminders are lost if the device "
         "reboots.",
         PropertyList({Property("seconds", kPropertyTypeInteger, 5, 86400),
@@ -205,20 +179,22 @@ void InitializePassportTools(PassportDisplay* display) {
         [](const PropertyList& properties) -> ToolResult {
             int seconds = properties["seconds"].value<int>();
             auto message = properties["message"].value<std::string>();
-            if (message.size() > 120) {
-                message.resize(120);
+            if (message.empty()) {
+                message = "时间到了";
+            } else if (message.size() > 120) {
+                message.resize(120);  // may cut a UTF-8 character; the display tolerates it
             }
 
             auto reminder = std::make_unique<Reminder>();
             reminder->message = message;
             reminder->due_us = esp_timer_get_time() + (int64_t)seconds * 1000000LL;
-            {
-                std::lock_guard<std::mutex> lock(g_reminders_mutex);
-                if (g_reminders.size() >= kMaxReminders) {
-                    return std::unexpected("Too many reminders (max 10)");
-                }
-                reminder->id = g_next_reminder_id++;
+
+            std::lock_guard<std::mutex> lock(g_reminders_mutex);
+            if (g_reminders.size() >= kMaxReminders) {
+                return std::unexpected("Too many reminders (max 10). Cancel one first.");
             }
+            reminder->id = g_next_reminder_id++;
+
             esp_timer_create_args_t args = {};
             args.callback = [](void* arg) {
                 int id = (int)(intptr_t)arg;
@@ -227,15 +203,20 @@ void InitializePassportTools(PassportDisplay* display) {
             args.arg = (void*)(intptr_t)reminder->id;
             args.name = "reminder";
             if (esp_timer_create(&args, &reminder->timer) != ESP_OK) {
+                reminder->timer = nullptr;
                 return std::unexpected("Failed to create timer");
             }
-            int id = reminder->id;
             esp_timer_start_once(reminder->timer, (uint64_t)seconds * 1000000ULL);
-            {
-                std::lock_guard<std::mutex> lock(g_reminders_mutex);
-                g_reminders.push_back(std::move(reminder));
+            int id = reminder->id;
+            g_reminders.push_back(std::move(reminder));
+
+            auto when = FormatDuration(seconds);
+            if (auto display = Board::GetInstance().GetDisplay(); display != nullptr) {
+                display->ShowNotification("已设提醒：" + when + "后 " + message, 5000);
             }
-            return "{\"id\":" + std::to_string(id) + "}";
+            ESP_LOGI(TAG, "Reminder %d set in %d s: %s", id, seconds, message.c_str());
+            return "{\"id\":" + std::to_string(id) + ",\"rings_in\":\"" + when +
+                   "\",\"note\":\"The device will ring by itself when it is due.\"}";
         });
 
     mcp.AddTool("self.reminder.list",
@@ -244,8 +225,8 @@ void InitializePassportTools(PassportDisplay* display) {
                 [](const PropertyList& properties) -> ToolResult { return RemindersJson(); });
 
     mcp.AddTool("self.reminder.cancel",
-                "Cancel a countdown reminder by id. Use id 0 to cancel all reminders. Call "
-                "`self.reminder.list` first if you do not know the id.",
+                "Cancel a countdown reminder by id and stop the ringing. Use id 0 to cancel all "
+                "reminders. Call `self.reminder.list` first if you do not know the id.",
                 PropertyList({Property("id", kPropertyTypeInteger, 0, 1000000)}),
                 [](const PropertyList& properties) -> ToolResult {
                     int id = properties["id"].value<int>();
@@ -261,31 +242,8 @@ void InitializePassportTools(PassportDisplay* display) {
                             }
                         }
                     }
-                    for (auto& r : removed) {
-                        DeleteReminderTimer(r.get());
-                    }
+                    // Timers are deleted by ~Reminder outside the lock.
+                    Application::GetInstance().Schedule(StopRinging);
                     return !removed.empty();
-                });
-
-    mcp.AddTool("self.screen.list_pictures",
-                "List the pictures stored on the device (name and description) that can be shown "
-                "with `self.screen.show_picture`.",
-                PropertyList(),
-                [](const PropertyList& properties) -> ToolResult { return PicturesJson(); });
-
-    mcp.AddTool("self.screen.show_picture",
-                "Show a stored picture on the screen in place of the avatar for a few seconds, "
-                "e.g. when the user asks to see it. Call `self.screen.list_pictures` first to get "
-                "the names.",
-                PropertyList({Property("name", kPropertyTypeString),
-                              Property("seconds", kPropertyTypeInteger, 15, 3, 300)}),
-                [display](const PropertyList& properties) -> ToolResult {
-                    auto name = properties["name"].value<std::string>();
-                    int seconds = properties["seconds"].value<int>();
-                    if (!display->ShowPicture(name, seconds)) {
-                        return std::unexpected("Picture not found: " + name +
-                                               ". Call self.screen.list_pictures for the names.");
-                    }
-                    return true;
                 });
 }

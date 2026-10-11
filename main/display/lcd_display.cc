@@ -1507,9 +1507,10 @@ void LcdDisplay::UpdateAvatarAnimation() {
 
     const EmojiFrame* frame = nullptr;
     const EmojiFrame* talk = collection->GetEmojiFrame(current_emotion_, "talk");
-    // Do not query the audio service from here: taking its queue mutex from the LVGL task
-    // every few tens of milliseconds can delay audio playback on single-core chips.
-    bool talking = state == kDeviceStateSpeaking;
+    // Move the mouth only while audio frames are actually being played, so it rests between
+    // sentences. last_output_ms() is a lock-free read and never blocks the playback path.
+    bool talking =
+        state == kDeviceStateSpeaking && now - app.GetAudioService().last_output_ms() < 250;
     if (talking && talk != nullptr) {
         if (now >= next_mouth_toggle_ms_) {
             mouth_open_ = !mouth_open_;

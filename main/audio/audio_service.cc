@@ -352,6 +352,7 @@ void AudioService::AudioOutputTask() {
 
         /* Update the last output time */
         last_output_time_ = std::chrono::steady_clock::now();
+        last_output_ms_.store(esp_timer_get_time() / 1000, std::memory_order_relaxed);
         debug_statistics_.playback_count++;
 
         bool notify_drained = false;
