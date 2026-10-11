@@ -6,6 +6,7 @@
 #include "config.h"
 #include "assets/lang_config.h"
 #include "cw2017_battery_monitor.h"
+#include "passport_tools.h"
 
 #include <esp_log.h>
 #include <esp_lcd_panel_vendor.h>
@@ -210,7 +211,7 @@ private:
         esp_lcd_panel_mirror(panel, DISPLAY_MIRROR_X, DISPLAY_MIRROR_Y);
         esp_lcd_panel_disp_on_off(panel, true);
 
-        display_ = new SpiLcdDisplay(panel_io, panel,
+        display_ = new PassportDisplay(panel_io, panel,
                                      DISPLAY_WIDTH, DISPLAY_HEIGHT,
                                      DISPLAY_OFFSET_X, DISPLAY_OFFSET_Y,
                                      DISPLAY_MIRROR_X, DISPLAY_MIRROR_Y, DISPLAY_SWAP_XY);
@@ -222,6 +223,7 @@ public:
         InitializeSpi();
         InitializeDisplay();
         InitializeButtons();
+        InitializePassportTools(static_cast<PassportDisplay*>(display_));
         GetBacklight()->RestoreBrightness();
     }
 
