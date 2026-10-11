@@ -24,6 +24,12 @@
 
 #include "board.h"
 
+// Emoji image zoom: 256 = 1x. The emoji PNGs are 64x64, so 640 (2.5x) shows them at 160x160.
+// Change this value to make the avatar bigger or smaller (e.g. 512 = 128px, 768 = 192px).
+#ifndef EMOJI_IMAGE_SCALE
+#define EMOJI_IMAGE_SCALE 640
+#endif
+
 #define TAG "LcdDisplay"
 
 namespace {
@@ -612,6 +618,7 @@ void LcdDisplay::SetupUI() {
     lv_obj_add_flag(low_battery_popup_, LV_OBJ_FLAG_HIDDEN);
 
     emoji_image_ = lv_img_create(screen);
+    lv_image_set_scale(emoji_image_, EMOJI_IMAGE_SCALE);
     lv_obj_align(emoji_image_, LV_ALIGN_TOP_MID, 0,
                  text_font->line_height + lvgl_theme->spacing(8));
 
@@ -987,6 +994,7 @@ void LcdDisplay::SetupUI() {
     lv_label_set_text(emoji_label_, MATERIAL_SYMBOLS_ROBOT_2);
 
     emoji_image_ = lv_img_create(emoji_box_);
+    lv_image_set_scale(emoji_image_, EMOJI_IMAGE_SCALE);
     lv_obj_center(emoji_image_);
     lv_obj_add_flag(emoji_image_, LV_OBJ_FLAG_HIDDEN);
 
