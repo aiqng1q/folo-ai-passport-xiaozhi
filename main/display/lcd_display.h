@@ -8,6 +8,7 @@
 #include <esp_lcd_panel_ops.h>
 #include <atomic>
 #include <memory>
+#include <string>
 
 #define PREVIEW_IMAGE_DURATION_MS 5000
 
@@ -36,6 +37,22 @@ protected:
     esp_timer_handle_t preview_timer_ = nullptr;
     std::unique_ptr<LvglImage> preview_image_cached_ = nullptr;
     bool hide_subtitle_ = false;  // Control whether to hide chat messages/subtitles
+
+    // Avatar animation: talk / blink / idle frames drawn over the emoji image.
+    lv_obj_t* emoji_overlay_ = nullptr;
+    lv_timer_t* avatar_timer_ = nullptr;
+    std::string current_emotion_;
+    bool emotion_is_image_ = false;
+    const EmojiFrame* shown_frame_ = nullptr;
+    bool mouth_open_ = false;
+    int64_t next_mouth_toggle_ms_ = 0;
+    int64_t next_blink_ms_ = 0;
+    int64_t blink_until_ms_ = 0;
+    int64_t last_activity_ms_ = 0;
+
+    void CreateAvatarAnimation();
+    void UpdateAvatarAnimation();
+    void ShowEmojiFrame(const EmojiFrame* frame);
 
     void InitializeLcdThemes();
     virtual bool Lock(int timeout_ms = 0) override;

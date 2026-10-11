@@ -22,7 +22,11 @@
 
 #include "../../managed_components/espressif2022__esp_emote_gfx/src/lib/qrcode/qrcodegen.h"
 
+#include "application.h"
 #include "board.h"
+
+#include <esp_random.h>
+#include <esp_timer.h>
 
 #define TAG "LcdDisplay"
 
@@ -429,11 +433,14 @@ LcdDisplay::~LcdDisplay() {
     if (activation_code_label_ != nullptr) {
         lv_obj_del(activation_code_label_);
     }
+    if (avatar_timer_ != nullptr) {
+        lv_timer_delete(avatar_timer_);
+    }
     if (emoji_label_ != nullptr) {
         lv_obj_del(emoji_label_);
     }
     if (emoji_image_ != nullptr) {
-        lv_obj_del(emoji_image_);
+        lv_obj_del(emoji_image_);  // also deletes emoji_overlay_
     }
     if (emoji_box_ != nullptr) {
         lv_obj_del(emoji_box_);
@@ -614,6 +621,7 @@ void LcdDisplay::SetupUI() {
     emoji_image_ = lv_img_create(screen);
     lv_obj_align(emoji_image_, LV_ALIGN_TOP_MID, 0,
                  text_font->line_height + lvgl_theme->spacing(8));
+    CreateAvatarAnimation();
 
     // Display AI logo while booting
     emoji_label_ = lv_label_create(screen);
@@ -989,6 +997,7 @@ void LcdDisplay::SetupUI() {
     emoji_image_ = lv_img_create(emoji_box_);
     lv_obj_center(emoji_image_);
     lv_obj_add_flag(emoji_image_, LV_OBJ_FLAG_HIDDEN);
+    CreateAvatarAnimation();
 
     /* Middle layer: preview_image_ - centered display */
     preview_image_ = lv_image_create(screen);
@@ -1372,6 +1381,14 @@ void LcdDisplay::SetEmotion(const char* emotion) {
 
     auto emoji_collection = static_cast<LvglTheme*>(current_theme_)->emoji_collection();
     auto image = emoji_collection != nullptr ? emoji_collection->GetEmojiImage(emotion) : nullptr;
+    {
+        DisplayLockGuard lock(this);
+        current_emotion_ = emotion;
+        emotion_is_image_ = image != nullptr && !image->IsGif();
+        mouth_open_ = false;
+        last_activity_ms_ = esp_timer_get_time() / 1000;
+        ShowEmojiFrame(nullptr);
+    }
     if (image == nullptr) {
         auto lvgl_theme = static_cast<LvglTheme*>(current_theme_);
         const char* utf8 = noto_emoji_get_utf8(emotion);
@@ -1441,6 +1458,89 @@ void LcdDisplay::SetEmotion(const char* emotion) {
         lv_obj_add_flag(emoji_label_, LV_OBJ_FLAG_HIDDEN);
     }
 #endif
+}
+
+void LcdDisplay::CreateAvatarAnimation() {
+    // The overlay is a child of the emoji image, so frame coordinates are relative to
+    // the image's top-left corner and it moves and hides together with the image.
+    emoji_overlay_ = lv_image_create(emoji_image_);
+    lv_obj_add_flag(emoji_overlay_, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_remove_flag(emoji_image_, LV_OBJ_FLAG_SCROLLABLE);
+    avatar_timer_ = lv_timer_create(
+        [](lv_timer_t* timer) {
+            static_cast<LcdDisplay*>(lv_timer_get_user_data(timer))->UpdateAvatarAnimation();
+        },
+        40, this);
+}
+
+void LcdDisplay::ShowEmojiFrame(const EmojiFrame* frame) {
+    if (emoji_overlay_ == nullptr || frame == shown_frame_) {
+        return;
+    }
+    shown_frame_ = frame;
+    if (frame == nullptr || frame->image == nullptr) {
+        lv_obj_add_flag(emoji_overlay_, LV_OBJ_FLAG_HIDDEN);
+        return;
+    }
+    lv_image_set_src(emoji_overlay_, frame->image->image_dsc());
+    lv_obj_set_pos(emoji_overlay_, frame->x, frame->y);
+    lv_obj_remove_flag(emoji_overlay_, LV_OBJ_FLAG_HIDDEN);
+}
+
+// Runs in the LVGL task (display lock held) every 40 ms.
+void LcdDisplay::UpdateAvatarAnimation() {
+    constexpr int64_t kIdleFrameDelayMs = 30000;
+    int64_t now = esp_timer_get_time() / 1000;
+    auto& app = Application::GetInstance();
+    auto state = app.GetDeviceState();
+    if (state != kDeviceStateIdle) {
+        last_activity_ms_ = now;
+    }
+
+    auto lvgl_theme = static_cast<LvglTheme*>(current_theme_);
+    auto collection = lvgl_theme != nullptr ? lvgl_theme->emoji_collection() : nullptr;
+    if (collection == nullptr || !emotion_is_image_ || emoji_image_ == nullptr ||
+        lv_obj_has_flag(emoji_image_, LV_OBJ_FLAG_HIDDEN)) {
+        ShowEmojiFrame(nullptr);
+        return;
+    }
+
+    const EmojiFrame* frame = nullptr;
+    const EmojiFrame* talk = collection->GetEmojiFrame(current_emotion_, "talk");
+    // Only move the mouth while audio is actually queued, so it rests between sentences.
+    bool talking = state == kDeviceStateSpeaking && !app.GetAudioService().IsPlaybackIdle();
+    if (talking && talk != nullptr) {
+        if (now >= next_mouth_toggle_ms_) {
+            mouth_open_ = !mouth_open_;
+            next_mouth_toggle_ms_ =
+                now + (mouth_open_ ? 110 + esp_random() % 120 : 80 + esp_random() % 100);
+        }
+        frame = mouth_open_ ? talk : nullptr;
+    } else {
+        mouth_open_ = false;
+        const EmojiFrame* idle = nullptr;
+        if (state == kDeviceStateIdle && now - last_activity_ms_ > kIdleFrameDelayMs) {
+            idle = collection->GetEmojiFrame(current_emotion_, "idle");
+        }
+        const EmojiFrame* blink = collection->GetEmojiFrame(current_emotion_, "blink");
+        if (idle != nullptr) {
+            frame = idle;
+        } else if (blink != nullptr) {
+            if (next_blink_ms_ == 0) {
+                next_blink_ms_ = now + 2000 + esp_random() % 3000;
+            }
+            if (now >= next_blink_ms_) {
+                blink_until_ms_ = now + 150;
+                // Mostly single blinks every few seconds, sometimes a quick double blink.
+                next_blink_ms_ =
+                    (esp_random() % 5 == 0) ? now + 400 : now + 2500 + esp_random() % 4000;
+            }
+            if (now < blink_until_ms_) {
+                frame = blink;
+            }
+        }
+    }
+    ShowEmojiFrame(frame);
 }
 
 void LcdDisplay::SetTheme(Theme* theme) {

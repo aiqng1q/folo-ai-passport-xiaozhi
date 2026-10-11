@@ -346,6 +346,30 @@ bool Assets::LvglStrategy::Apply(Assets* assets, bool refresh_display_theme) {
                     }
                     custom_emoji_collection->AddEmoji(name->valuestring,
                                                       new LvglRawImage(ptr, size));
+
+                    // Optional animation frames, e.g.
+                    // "talk": {"file": "smile_talk.bin", "x": 80, "y": 140}
+                    for (const char* kind : {"talk", "blink", "idle"}) {
+                        cJSON* frame = cJSON_GetObjectItem(emoji, kind);
+                        if (!cJSON_IsObject(frame)) {
+                            continue;
+                        }
+                        cJSON* frame_file = cJSON_GetObjectItem(frame, "file");
+                        cJSON* frame_x = cJSON_GetObjectItem(frame, "x");
+                        cJSON* frame_y = cJSON_GetObjectItem(frame, "y");
+                        void* frame_ptr = nullptr;
+                        size_t frame_size = 0;
+                        if (!cJSON_IsString(frame_file) ||
+                            !assets->GetAssetData(frame_file->valuestring, frame_ptr, frame_size)) {
+                            ESP_LOGE(TAG, "Emoji %s %s frame is not found", name->valuestring,
+                                     kind);
+                            continue;
+                        }
+                        custom_emoji_collection->AddEmojiFrame(
+                            name->valuestring, kind, new LvglRawImage(frame_ptr, frame_size),
+                            cJSON_IsNumber(frame_x) ? frame_x->valueint : 0,
+                            cJSON_IsNumber(frame_y) ? frame_y->valueint : 0);
+                    }
                 }
             }
         }
