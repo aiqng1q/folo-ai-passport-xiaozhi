@@ -9,6 +9,25 @@
 
 LvglRawImage::LvglRawImage(void* data, size_t size) {
     bzero(&image_dsc_, sizeof(image_dsc_));
+
+    // Pre-decoded LVGL image (lv_image_header_t followed by pixel data), e.g. an
+    // RGB565 emoji stored in the memory-mapped assets partition. LVGL draws it
+    // straight from flash, so no RAM is needed to decode it. This lets boards
+    // without PSRAM show emojis larger than a PNG could be decoded at.
+    if (size > sizeof(lv_image_header_t)) {
+        lv_image_header_t header;
+        memcpy(&header, data, sizeof(header));
+        uint32_t pixel_bytes = (uint32_t)header.stride * header.h;
+        if (header.magic == LV_IMAGE_HEADER_MAGIC && header.w > 0 && header.h > 0 &&
+            header.stride > 0 && pixel_bytes == size - sizeof(header)) {
+            image_dsc_.header = header;
+            image_dsc_.data_size = pixel_bytes;
+            image_dsc_.data = static_cast<uint8_t*>(data) + sizeof(header);
+            pre_decoded_ = true;
+            return;
+        }
+    }
+
     image_dsc_.data_size = size;
     image_dsc_.data = static_cast<uint8_t*>(data);
     image_dsc_.header.magic = LV_IMAGE_HEADER_MAGIC;
@@ -18,6 +37,9 @@ LvglRawImage::LvglRawImage(void* data, size_t size) {
 }
 
 bool LvglRawImage::IsGif() const {
+    if (pre_decoded_) {
+        return false;
+    }
     auto ptr = (const uint8_t*)image_dsc_.data;
     return ptr[0] == 'G' && ptr[1] == 'I' && ptr[2] == 'F';
 }

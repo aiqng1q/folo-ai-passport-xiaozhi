@@ -18,6 +18,7 @@ public:
 
 private:
     lv_img_dsc_t image_dsc_;
+    bool pre_decoded_ = false;
 };
 
 class LvglCBinImage : public LvglImage {
