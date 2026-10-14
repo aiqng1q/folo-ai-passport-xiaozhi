@@ -377,6 +377,15 @@ config USE_MULTILINE_CHAT_MESSAGE
         When disabled (default), a single-line horizontally scrolling label
         is shown at the bottom of the screen.
 
+config PASSPORT_PHONE_HID
+    bool "AI Passport: control a paired iPhone over Bluetooth (experimental)"
+    depends on BOARD_TYPE_FOLOTOY_AI_PASSPORT && BT_NIMBLE_ENABLED && BT_NIMBLE_HID_SERVICE
+    default n
+    help
+        Makes the Passport a Bluetooth LE keyboard + mouse + media keys for an iPhone and
+        adds self.phone.* MCP tools (keys, swipes, typing). Uses extra internal RAM next to
+        Wi-Fi and voice, so it is only enabled in the ai-passport-phone build variant.
+
 choice WAKE_WORD_TYPE
     prompt "Wake Word Implementation Type"
     default USE_AFE_WAKE_WORD if (IDF_TARGET_ESP32S3 || IDF_TARGET_ESP32P4 || IDF_TARGET_ESP32S31) && SPIRAM

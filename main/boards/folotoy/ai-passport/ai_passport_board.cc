@@ -7,6 +7,7 @@
 #include "assets/lang_config.h"
 #include "cw2017_battery_monitor.h"
 #include "passport_tools.h"
+#include "phone_tools.h"
 
 #include <esp_log.h>
 #include <esp_lcd_panel_vendor.h>
@@ -224,6 +225,7 @@ public:
         InitializeDisplay();
         InitializeButtons();
         InitializePassportTools();
+        InitializePhoneTools();
         GetBacklight()->RestoreBrightness();
     }
 

@@ -12,6 +12,32 @@
                 "CONFIG_LV_USE_QRCODE=n",
                 "CONFIG_USE_ESP_WAKE_WORD=n"
             ]
+        },
+        {
+            "name": "ai-passport-phone",
+            "sdkconfig_append": [
+                "CONFIG_ESPTOOLPY_FLASHSIZE_8MB=y",
+                "CONFIG_PARTITION_TABLE_CUSTOM_FILENAME=\"partitions/v2/8m.csv\"",
+                "CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y",
+                "CONFIG_LV_USE_QRCODE=n",
+                "CONFIG_USE_ESP_WAKE_WORD=n",
+                "CONFIG_BT_ENABLED=y",
+                "CONFIG_BT_NIMBLE_ENABLED=y",
+                "CONFIG_BT_NIMBLE_ROLE_CENTRAL=n",
+                "CONFIG_BT_NIMBLE_ROLE_OBSERVER=n",
+                "CONFIG_BT_NIMBLE_ROLE_PERIPHERAL=y",
+                "CONFIG_BT_NIMBLE_ROLE_BROADCASTER=y",
+                "CONFIG_BT_NIMBLE_MAX_CONNECTIONS=1",
+                "CONFIG_BT_NIMBLE_MAX_BONDS=2",
+                "CONFIG_BT_NIMBLE_HOST_BASED_PRIVACY=n",
+                "CONFIG_BT_NIMBLE_HID_SERVICE=y",
+                "CONFIG_BT_NIMBLE_SVC_HID_MAX_INSTANCES=1",
+                "CONFIG_BT_NIMBLE_SVC_HID_MAX_RPTS=6",
+                "CONFIG_BT_NIMBLE_NVS_PERSIST=y",
+                "CONFIG_BT_NIMBLE_SM_SC=y",
+                "CONFIG_ESP_COEX_SW_COEXIST_ENABLE=y",
+                "CONFIG_PASSPORT_PHONE_HID=y"
+            ]
         }
     ]
 }
