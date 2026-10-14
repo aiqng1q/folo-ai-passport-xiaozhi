@@ -87,7 +87,7 @@ jobs:
           set -o pipefail
           python scripts/build.py ${{ matrix.board }} --name ${{ matrix.name }} 2>&1 | tee build.log || {
             # Surface compiler/linker/config errors as annotations (raw logs are hard to fetch).
-            grep -E "error:|Error:|undefined reference|overflowed|CMake Error|FAILED:" build.log \
+            grep -E "error:|Error:|undefined reference|overflowed|CMake Error|CMake Warning|esp_hid|FAILED:" build.log \
               | head -40 | cut -c1-900 | sed 's/^/::error::/'
             exit 1
           }

@@ -280,8 +280,13 @@ if(CONFIG_IDF_TARGET_ESP32S3)
 endif()
 
 set(MAIN_PRIV_REQUIRES_EXTRA "")
-if(CONFIG_PASSPORT_PHONE_HID)
+# esp_hid backs the experimental phone-control variant (CONFIG_PASSPORT_PHONE_HID). Kconfig
+# values are not available while component requirements are expanded, so depend on it
+# unconditionally; the sources compile to nothing when the option is off.
+if(EXISTS "$ENV{IDF_PATH}/components/esp_hid")
     list(APPEND MAIN_PRIV_REQUIRES_EXTRA esp_hid)
+else()
+    message(WARNING "esp_hid is not part of this ESP-IDF: $ENV{IDF_PATH}/components")
 endif()
 if(BOARD_TYPE STREQUAL "m5stack-stick-s3")
     list(APPEND MAIN_PRIV_REQUIRES_EXTRA
